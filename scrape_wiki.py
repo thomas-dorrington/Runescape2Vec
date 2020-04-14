@@ -9,17 +9,6 @@ from networkx.drawing.nx_agraph import to_agraph
 
 homepage = 'https://oldschool.runescape.wiki'
 
-category_url_regex = regex.compile(
-    r"^https:\/\/oldschool\.runescape\.wiki\/w\/Category:([A-Za-z0-9\_\-\.\%\(\)\/\!]+)"
-    r"(?:\?(?:subcatfrom|subcatuntil)\=.*)?$"
-)
-
-
-def get_category_name(category_url):
-
-    category_url_match = category_url_regex.match(category_url)
-    return category_url_match.group(1) if category_url_match is not None else None
-
 
 def scrape_page(page_url):
 
@@ -31,25 +20,85 @@ def scrape_category(category_url):
     return {}
 
 
-def build_category_graph(category_blacklist=[]):
+class CategoryGraph(object):
 
-    # Initialise a Directed Graph
-    DG = nx.DiGraph()
-    root_node = 'Old_School_RuneScape_Wiki'
-    DG.add_node(root_node)
+    category_url_regex = regex.compile(
+        r"^https:\/\/oldschool\.runescape\.wiki\/w\/Category:([A-Za-z0-9\_\-\.\%\(\)\/\!]+)"
+        r"(?:\?(?:subcatfrom|subcatuntil)\=.*)?$"
+    )
 
-    def crawl_categories(category_url, parent_category, processing_next_page=False):
+    def __init__(self, root_node, root_category_url, graph=None):
 
-        category_name = get_category_name(category_url)
+        self.root_node = root_node
+        self.root_category_url = root_category_url
+
+        if graph is None:
+            # Initialise a Directed Graph and crawl wiki from scratch
+
+            self.category_graph = nx.DiGraph()
+            self.category_graph.add_node(self.root_node)
+
+            self._crawl_categories(
+                category_url=self.root_category_url,
+                parent_category=self.root_node,
+                processing_next_page=False
+            )
+
+        else:
+            # We are loading an already crawled graph from disk
+            self.category_graph = graph
+
+    @staticmethod
+    def get_category_name(category_url):
+
+        category_url_match = CategoryGraph.category_url_regex.match(category_url)
+        return category_url_match.group(1) if category_url_match is not None else None
+
+    @staticmethod
+    def load(path_to_load):
+
+        with open(path_to_load, 'r') as open_f:
+            category_graph_json = json.load(open_f)
+
+        return CategoryGraph(
+            root_node=category_graph_json['root_node'],
+            root_category_url=category_graph_json['root_category_url'],
+            graph=json_graph.adjacency_graph(category_graph_json['graph'])
+        )
+
+    def save(self, path_to_save):
+
+        category_graph_json = {
+            'root_node': self.root_node,
+            'root_category_url': self.root_category_url,
+            'graph': json_graph.adjacency_data(self.category_graph)
+        }
+
+        with open(path_to_save, 'w') as open_f:
+            json.dump(category_graph_json, open_f, indent=4)
+
+    def draw(self, path_to_save, subgraph_root_node=None):
+
+        A = to_agraph(self.category_graph)
+        A.layout('dot')
+        A.draw(path_to_save)
+
+    def _crawl_categories(self, category_url, parent_category, processing_next_page=False):
+        """
+        Recursive function which crawls the category graph by following URL links on the Wiki via depth-first traversal.
+        Initially called from __init__ with `category_url` set to the root category URL.
+        """
+
+        category_name = CategoryGraph.get_category_name(category_url)
         if category_name is None:
             print "%s is not a valid URL for a category page" % category_url
             return
 
         # Check if the category was already in the graph *before* adding the edge
-        already_in_graph = True if category_name in DG.nodes else False
+        already_in_graph = True if category_name in self.category_graph.nodes else False
 
         # Add a directed edge from parent category to this category
-        DG.add_edge(parent_category, category_name)
+        self.category_graph.add_edge(parent_category, category_name)
 
         if already_in_graph and not processing_next_page:
             return
@@ -89,7 +138,7 @@ def build_category_graph(category_blacklist=[]):
                         # The parent category of the recursive call must remain the same
 
                         followed_next_page = True
-                        crawl_categories(
+                        self._crawl_categories(
                             category_url=homepage + subcategory.attrs['href'],
                             parent_category=parent_category,
                             processing_next_page=True
@@ -97,29 +146,49 @@ def build_category_graph(category_blacklist=[]):
 
                 else:
 
-                    crawl_categories(
+                    self._crawl_categories(
                         category_url=homepage + subcategory.attrs['href'],
                         parent_category=category_name,
                         processing_next_page=False
                     )
 
-    crawl_categories(
-        category_url='https://oldschool.runescape.wiki/w/Category:Content',
-        parent_category=root_node
-    )
+    def find_cycles(self):
+        """
+        Finds the simple cycles of the directed graph, returning a generator.
+        Each cycle is represented by a list of nodes along the cycle.
+        """
 
-    # A = to_agraph(DG)
-    # A.layout('dot')
-    # A.draw('category_graph.pdf')
+        return nx.algorithms.cycles.simple_cycles(self.category_graph)
 
-    return DG
+    def remove_edges(self, edges_to_remove):
+        """
+        Used to remove cycles from the graph.
+        There appears to be some mistakes on the wiki, where cycles exist among some categories.
+        For example, Skills -> Construction, but also Construction -> Skills.
+        While the correct removal of some cycles can be automated, in general the process cannot be, so we rely on
+        an input list of edges to remove, to be supplied after human inspection: `edges_to_remove`
+        """
+
+        for edge in edges_to_remove:
+
+            if edge not in self.category_graph.edges:
+                print "Warning: trying to delete an edge from %s to %s which does not exist." % (edge[0], edge[1])
+                continue
+
+            self.category_graph.remove_edge(*edge)
+
+        # See if the graph still has cycles as a sanity check
+        new_cycles = len(list(self.find_cycles()))
+        if new_cycles != 0:
+            print "Warning: directed graph still has %s cycles in." % str(new_cycles)
 
 
 if __name__ == '__main__':
 
-    category_graph = build_category_graph(
-        category_blacklist=[]
+    category_graph = CategoryGraph(
+        root_node='Old_School_RuneScape_Wiki',
+        root_category_url='https://oldschool.runescape.wiki/w/Category:Content'
     )
 
-    with open('data/category_graph.json', 'w') as open_f:
-        json.dump(json_graph.adjacency_data(category_graph), open_f, indent=4)
+    category_graph.draw('data/category_graph.pdf')
+    category_graph.save('data/category_graph.json')
