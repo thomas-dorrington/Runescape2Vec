@@ -10,21 +10,14 @@ from networkx.drawing.nx_agraph import to_agraph
 homepage = 'https://oldschool.runescape.wiki'
 
 
-def scrape_page(page_url):
-
-    return {}
-
-
-def scrape_category(category_url):
-
-    return {}
-
-
 class CategoryGraph(object):
 
+    # Note: this regex does not allow categories to be spanning multiple subcategories *and* pages at the same time.
+    # I.e. it does not allow for a mix of pagefrom/pageuntil and subcatfrom/subcatuntil.
+    # This is fine though, as this case should never arise under the way we handle crawling multiple 'next page's
     category_url_regex = regex.compile(
         r"^https:\/\/oldschool\.runescape\.wiki\/w\/Category:([A-Za-z0-9\_\-\.\%\(\)\/\!]+)"
-        r"(?:\?(?:subcatfrom|subcatuntil)\=.*)?$"
+        r"(?:\?(?:(?:(?:pagefrom|pageuntil)\=.*\#mw-pages)|(?:(?:subcatfrom|subcatuntil)\=.*\#mw-subcategories)))?$"
     )
 
     def __init__(self, root_node, root_category_url, graph=None):
@@ -77,9 +70,25 @@ class CategoryGraph(object):
         with open(path_to_save, 'w') as open_f:
             json.dump(category_graph_json, open_f, indent=4)
 
-    def draw(self, path_to_save, subgraph_root_node=None):
+    def draw(self, path_to_save, nodes_to_include=None):
+        """
+        Draws graphical representation of the directed graph, saving to file `path_to_save`.
+        `nodes_to_include` typically set to `nx.dag.descendants()`
+        """
 
-        A = to_agraph(self.category_graph)
+        if nodes_to_include is None:
+            # Draw the entire graph network
+
+            A = to_agraph(self.category_graph)
+
+        else:
+            # Draw the subgraph induced by the nodes in `nodes_to_include`
+            # The induced subgraph contains the nodes in `nodes_to_include` and the edges between those nodes
+            # Note: `subgraph()` returns a `SubGraph View`. The graph structure cannot be changed and
+            # node/edge attributes are shared with the original graph.
+
+            A = to_agraph(self.category_graph.subgraph(nodes_to_include))
+
         A.layout('dot')
         A.draw(path_to_save)
 
@@ -100,8 +109,18 @@ class CategoryGraph(object):
         # Add a directed edge from parent category to this category
         self.category_graph.add_edge(parent_category, category_name)
 
-        if already_in_graph and not processing_next_page:
-            return
+        if already_in_graph:
+            if not processing_next_page:
+                return
+        else:
+            # If first time seeing the category, initialise the node's attribute dictionary
+
+            # Scrape category for page URLs
+            pages = []
+            self._scrape_category(category_url=category_url, pages=pages, category_name=category_name)
+
+            self.category_graph.nodes[category_name]['pages'] = pages
+            self.category_graph.nodes[category_name]['category_url'] = homepage + '/w/Category:' + category_name
 
         response = get(category_url)
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -152,6 +171,62 @@ class CategoryGraph(object):
                         processing_next_page=False
                     )
 
+    def _scrape_category(self, category_url, pages, category_name):
+        """
+        Scrapes a category page (pointed to by the URL `category_url`) for all of its pages.
+        Only finds page URLs directly under this category (i.e. not recursively accumulated under subcategories).
+
+        Pages are accumulated in the argument list `pages`, which should be defined outside the scope of this function
+        (i.e. just before calling) as an empty list.
+        """
+
+        # Check `category_url` is a valid URL for a category page, and that the category name inferred under
+        # `category_url` is still referring to the same category as this function was initially called under
+        # (i.e. it has not changed for some reason when following the 'next page' links)
+        category_url_name = CategoryGraph.get_category_name(category_url)
+        if category_url_name is None:
+            print "%s is not a valid URL for a category page" % category_url
+            return
+        if category_url_name != category_name:
+            print "%s is no longer the same as %s when scraping pages split across multiple URLs" % (category_url_name,
+                                                                                                     category_name)
+            return
+
+        response = get(category_url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        pages_div = soup.find('div', id='mw-pages')
+        if pages_div is not None:
+            # If this category has pages, and is not just subcategories
+            # Use same logic as is used in `self._crawl_categories()` - see there for detailed comments
+
+            followed_next_page = False
+
+            for page in pages_div.find_all('a'):
+
+                if page.text == 'previous page':
+                    continue
+
+                if page.text == 'next page':
+
+                    if followed_next_page:
+                        continue
+
+                    else:
+                        followed_next_page = True
+                        self._scrape_category(
+                            category_url=homepage + page.attrs['href'],
+                            pages=pages,
+                            category_name=category_name
+                        )
+
+                else:
+                    page_url = homepage + page.attrs['href']
+                    if page_url in pages:
+                        print "The page URL '%s' already exists in category %s" % (page_url, category_url_name)
+                    else:
+                        pages.append(page_url)
+
     def find_cycles(self):
         """
         Finds the simple cycles of the directed graph, returning a generator.
@@ -165,7 +240,7 @@ class CategoryGraph(object):
         Used to remove cycles from the graph.
         There appears to be some mistakes on the wiki, where cycles exist among some categories.
         For example, Skills -> Construction, but also Construction -> Skills.
-        While the correct removal of some cycles can be automated, in general the process cannot be, so we rely on
+        While the correct removal of some cycles could be automated, in general the process cannot be, so we rely on
         an input list of edges to remove, to be supplied after human inspection: `edges_to_remove`
         """
 
@@ -177,10 +252,15 @@ class CategoryGraph(object):
 
             self.category_graph.remove_edge(*edge)
 
-        # See if the graph still has cycles as a sanity check
+        # See if the graph still has cycles in as a sanity check
         new_cycles = len(list(self.find_cycles()))
         if new_cycles != 0:
             print "Warning: directed graph still has %s cycles in." % str(new_cycles)
+
+
+def scrape_page(page_url):
+
+    return {}
 
 
 if __name__ == '__main__':
@@ -190,5 +270,8 @@ if __name__ == '__main__':
         root_category_url='https://oldschool.runescape.wiki/w/Category:Content'
     )
 
-    category_graph.draw('data/category_graph.pdf')
+    # category_graph.draw('data/category_graph.pdf')
+
     category_graph.save('data/category_graph.json')
+
+    # cycle_edges_to_remove = [('Construction', 'Skills'), ('Images_in_the_Wilderness', 'Images_in_the_Wilderness')]
