@@ -30,6 +30,7 @@ class CategoryGraph(object):
 
             self.category_graph = nx.DiGraph()
             self.category_graph.add_node(self.root_node)
+            self.category_graph.nodes[self.root_node]['pages'] = []
 
             self._crawl_categories(
                 category_url=self.root_category_url,
@@ -40,6 +41,13 @@ class CategoryGraph(object):
         else:
             # We are loading an already crawled graph from disk
             self.category_graph = graph
+
+        # See if the graph has cycles in, and if so print a warning
+        number_of_cycles = len(list(self.find_cycles()))
+        if number_of_cycles == 0:
+            print "Directed graph has no cycles."
+        else:
+            print "Warning: directed graph has %s cycles in." % str(number_of_cycles)
 
     @staticmethod
     def get_category_name(category_url):
@@ -222,9 +230,7 @@ class CategoryGraph(object):
 
                 else:
                     page_url = homepage + page.attrs['href']
-                    if page_url in pages:
-                        print "The page URL '%s' already exists in category %s" % (page_url, category_url_name)
-                    else:
+                    if page_url not in pages:
                         pages.append(page_url)
 
     def find_cycles(self):
@@ -254,13 +260,77 @@ class CategoryGraph(object):
 
         # See if the graph still has cycles in as a sanity check
         new_cycles = len(list(self.find_cycles()))
-        if new_cycles != 0:
+        if new_cycles == 0:
+            print "Directed graph now has no cycles in."
+        else:
             print "Warning: directed graph still has %s cycles in." % str(new_cycles)
+
+    def get_all_pages(self, from_category=None):
+        """
+        Returns a set of all the pages contained by any of the categories in the graph
+        """
+
+        all_graph_pages = set()
+
+        for node in self.category_graph.nodes:
+            for page in self.category_graph.nodes[node]['pages']:
+                all_graph_pages.add(page)
+
+        return all_graph_pages
 
 
 def scrape_page(page_url):
 
-    return {}
+    response = get(page_url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+
+    # Initialise a list to contain all the (non-hidden) categories classified at the bottom of the page
+    page_categories = []
+    category_links_div = soup.find('div', id='mw-normal-catlinks')
+    if category_links_div is not None:
+        for category in category_links_div.find_all('a'):
+            if category.text == 'Category':
+                continue
+            page_categories.append(category.text)
+    else:
+        print "%s does not have a 'mw-normal-catlinks' div" % page_url
+
+    return page_categories
+
+
+def scrape_all_pages():
+    """
+    Uses https://oldschool.runescape.wiki/w/Special:AllPages to return the set of all pages (ignoring redirect pages).
+    Useful to compare with all the pages found by a CategoryGraph object.
+
+    Upon inspection, any pages found through this function, but not found when crawling the category graph
+    (about 1000), are nearly always disambiguation pages. Outside of that, they are stubs,
+    or part of hidden/maintenance categories.
+
+    Any pages found through crawling the category graph, and not through this function (about 8000),
+    """
+
+    all_pages = set()
+    start_page = 'https://oldschool.runescape.wiki/w/Special:AllPages?from=&to=&namespace=0&hideredirects=1'
+
+    def crawl_page(page_url):
+
+        response = get(page_url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        all_pages_div = soup.find('div', class_='mw-allpages-body')
+        for page in all_pages_div.find_all('a'):
+            all_pages.add(homepage + page['href'])
+
+        all_pages_navigation = soup.find('div', class_='mw-allpages-nav')
+        for link in all_pages_navigation.find_all('a'):
+            if 'previous page' in link.text.lower():
+                continue
+            if 'next page' in link.text.lower():
+                crawl_page(homepage + link['href'])
+
+    crawl_page(start_page)
+    return all_pages
 
 
 if __name__ == '__main__':
@@ -270,8 +340,7 @@ if __name__ == '__main__':
         root_category_url='https://oldschool.runescape.wiki/w/Category:Content'
     )
 
-    # category_graph.draw('data/category_graph.pdf')
+    cycle_edges_to_remove = [('Construction', 'Skills'), ('Images_in_the_Wilderness', 'Images_in_the_Wilderness')]
+    category_graph.remove_edges(cycle_edges_to_remove)
 
     category_graph.save('data/category_graph.json')
-
-    # cycle_edges_to_remove = [('Construction', 'Skills'), ('Images_in_the_Wilderness', 'Images_in_the_Wilderness')]
