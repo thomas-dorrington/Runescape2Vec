@@ -303,11 +303,13 @@ def scrape_all_pages():
     Uses https://oldschool.runescape.wiki/w/Special:AllPages to return the set of all pages (ignoring redirect pages).
     Useful to compare with all the pages found by a CategoryGraph object.
 
-    Upon inspection, any pages found through this function, but not found when crawling the category graph
-    (about 1000), are nearly always disambiguation pages. Outside of that, they are stubs,
+    Upon inspection, any pages found through this function, but not found when crawling the category graph,
+    (about 1000) are nearly always disambiguation pages. Outside of that, they are stubs,
     or part of hidden/maintenance categories.
 
-    Any pages found through crawling the category graph, and not through this function (about 8000),
+    Any pages found through crawling the category graph, and not through this function, (about 8000) are either:
+        - Of the form .../w/(RuneScape|User|Update|Exchange|Transcript|Template|Calculator):...
+        - A redirect page, typically some kind of polished bone, e.g. /w/Polished_ogre_ribs -> /w/Ogre_ribs
     """
 
     all_pages = set()
