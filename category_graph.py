@@ -265,7 +265,7 @@ class CategoryGraph(object):
 
     def get_all_pages(self, from_category=None):
         """
-        Returns a set of all the pages contained by any of the categories in the graph
+        Returns a set of all the pages contained by any of the categories in the graph.
         """
 
         all_graph_pages = set()
@@ -275,6 +275,22 @@ class CategoryGraph(object):
                 all_graph_pages.add(page)
 
         return all_graph_pages
+
+    def get_page_categories(self, page_url):
+        """
+        Returns a set of all the categories this page is classified (directly) under.
+
+        Uses the category graph and node attributes (not the list of categories at the bottom of a page's URL).
+        In fact, this method can be used to compare the two lists and check they are the same.
+        """
+
+        page_categories = set()
+
+        for node in self.category_graph.nodes:
+            if page_url in self.category_graph.nodes[node]['pages']:
+                page_categories.add(node)
+
+        return page_categories
 
 
 if __name__ == '__main__':
