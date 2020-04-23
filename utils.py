@@ -1,4 +1,3 @@
-import sys
 import regex
 from requests import get
 from bs4 import BeautifulSoup
@@ -6,16 +5,14 @@ from bs4 import BeautifulSoup
 
 homepage = 'https://oldschool.runescape.wiki'
 
+invalid_page_regex = regex.compile(
+    r""
+)
 
-def category_name_to_url(category_name):
-    """
-    Maps from category plain-text (e.g. "Members' items") to corresponding URL extension ("Members%27_items")
-    """
 
-    category_name = category_name.replace(' ', '_')
-    category_name = category_name.replace('\'', '%27')
+def is_valid_page(page_url):
 
-    return category_name
+    return invalid_page_regex.match(page_url) is None
 
 
 def scrape_page(page_url):
@@ -37,9 +34,25 @@ def scrape_page(page_url):
     # Initialise a list to store all the paragraphs of the page, as strings
     page_paragraphs = []
     for paragraph in soup.find_all('p'):
-        # Collapse all multiple whitespace and newlines into one single space
+
+        # Prevents text in paragraph like '1st floor[UK]2nd floor[US]'
+        for span in paragraph.find_all('span', class_='floornumber-us'):
+            span.decompose()
+
+        # Prevents text in paragraph representing references, i.e. '[1]', '[2]', etc.
+        for sup in paragraph.find_all('sup', class_='reference'):
+            sup.decompose()
+
+        # Collapse all multiple whitespaces and newlines into one single space
         paragraph_text = regex.sub(r'[ \n]+', r' ', paragraph.text).strip()
-        page_paragraphs.append(paragraph_text)
+
+        if paragraph_text:
+            # If not empty string
+            page_paragraphs.append(paragraph_text)
+
+    # Extract plain-text name of page using first heading
+    # Useful for file names when saving text to disk, as well as collocation vectors
+
 
     return {
         'paragraphs': page_paragraphs,
@@ -82,19 +95,3 @@ def scrape_all_pages():
 
     crawl_page(start_page)
     return all_pages
-
-
-if __name__ == '__main__':
-
-    page_url = sys.argv[1]
-    scraped_page = scrape_page(page_url)
-
-    print "### CATEGORIES ###"
-    for category in scraped_page['categories']:
-        print category
-    print
-
-    print '### PARAGRAPHS ###'
-    for paragraph in scraped_page['paragraphs']:
-        print paragraph
-        print "~~~"
