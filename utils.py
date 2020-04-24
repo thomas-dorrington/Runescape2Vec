@@ -53,7 +53,6 @@ def scrape_page(page_url):
     # Extract plain-text name of page using first heading
     # Useful for file names when saving text to disk, as well as collocation vectors
 
-
     return {
         'paragraphs': page_paragraphs,
         'categories': page_categories

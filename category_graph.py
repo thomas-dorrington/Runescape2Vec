@@ -18,21 +18,24 @@ class CategoryGraph(object):
         r"(?:\?(?:(?:(?:pagefrom|pageuntil)\=.*\#mw-pages)|(?:(?:subcatfrom|subcatuntil)\=.*\#mw-subcategories)))?$"
     )
 
-    def __init__(self, root_node, root_category_url, graph=None):
+    # Regex to extract the plain-text version of the category name
+    # Similar to above, but excludes % character, replaces _ character with an actual space, and includes ' character
+    category_heading_regex = regex.compile(
+        r"^Category:([A-Za-z0-9 \-\.\(\)\/\!\']+)$"
+    )
 
-        self.root_node = root_node
+    def __init__(self, root_category_url, graph=None):
+
         self.root_category_url = root_category_url
 
         if graph is None:
             # Initialise a Directed Graph and crawl wiki from scratch
 
             self.category_graph = nx.DiGraph()
-            self.category_graph.add_node(self.root_node)
-            self.category_graph.nodes[self.root_node]['pages'] = []
 
             self._crawl_categories(
                 category_url=self.root_category_url,
-                parent_category=self.root_node,
+                parent_category=None,
                 processing_next_page=False
             )
 
@@ -48,7 +51,7 @@ class CategoryGraph(object):
             print "Warning: directed graph has %s cycles in." % str(number_of_cycles)
 
     @staticmethod
-    def get_category_name(category_url):
+    def get_category_url_name(category_url):
 
         category_url_match = CategoryGraph.category_url_regex.match(category_url)
         return category_url_match.group(1) if category_url_match is not None else None
@@ -60,7 +63,6 @@ class CategoryGraph(object):
             category_graph_json = json.load(open_f)
 
         return CategoryGraph(
-            root_node=category_graph_json['root_node'],
             root_category_url=category_graph_json['root_category_url'],
             graph=json_graph.adjacency_graph(category_graph_json['graph'])
         )
@@ -68,7 +70,6 @@ class CategoryGraph(object):
     def save(self, path_to_save):
 
         category_graph_json = {
-            'root_node': self.root_node,
             'root_category_url': self.root_category_url,
             'graph': json_graph.adjacency_data(self.category_graph)
         }
@@ -98,22 +99,38 @@ class CategoryGraph(object):
         A.layout('dot')
         A.draw(path_to_save)
 
-    def _crawl_categories(self, category_url, parent_category, processing_next_page=False):
+    def _crawl_categories(self, category_url, parent_category=None, processing_next_page=False):
         """
         Recursive function which crawls the category graph by following URL links on the Wiki via depth-first traversal.
         Initially called from __init__ with `category_url` set to the root category URL.
+        If `parent_category` is None, we are starting at the root node of the graph.
         """
 
-        category_name = CategoryGraph.get_category_name(category_url)
-        if category_name is None:
+        category_url_name = CategoryGraph.get_category_url_name(category_url)
+        if category_url_name is None:
             print "%s is not a valid URL for a category page" % category_url
             return
+
+        response = get(category_url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Extract plain-text version of category name from first heading tag
+        first_heading = soup.find('h1', class_='firstHeading')
+        if first_heading is None:
+            print "%s does not have a first heading <h1> tag" % category_url
+            return
+        category_heading_regex_match = CategoryGraph.category_heading_regex.match(first_heading.text)
+        if category_heading_regex_match is None:
+            print "<h1> tag of %s does not match the category heading regex" % category_url
+            return
+        category_name = category_heading_regex_match.group(1)
 
         # Check if the category was already in the graph *before* adding the edge
         already_in_graph = True if category_name in self.category_graph.nodes else False
 
         # Add a directed edge from parent category to this category
-        self.category_graph.add_edge(parent_category, category_name)
+        if parent_category is not None:
+            self.category_graph.add_edge(parent_category, category_name)
 
         if already_in_graph:
             if not processing_next_page:
@@ -121,15 +138,15 @@ class CategoryGraph(object):
         else:
             # If first time seeing the category, initialise the node's attribute dictionary
 
+            if parent_category is None:
+                self.category_graph.add_node(category_name)
+
             # Scrape category for page URLs
             pages = []
-            self._scrape_category(category_url=category_url, pages=pages, category_name=category_name)
+            self._scrape_category(category_url=category_url, pages=pages)
 
             self.category_graph.nodes[category_name]['pages'] = pages
-            self.category_graph.nodes[category_name]['category_url'] = homepage + '/w/Category:' + category_name
-
-        response = get(category_url)
-        soup = BeautifulSoup(response.text, 'html.parser')
+            self.category_graph.nodes[category_name]['category_url'] = homepage + '/w/Category:' + category_url_name
 
         subcategories_div = soup.find('div', id='mw-subcategories')
         if subcategories_div is not None:
@@ -177,7 +194,7 @@ class CategoryGraph(object):
                         processing_next_page=False
                     )
 
-    def _scrape_category(self, category_url, pages, category_name):
+    def _scrape_category(self, category_url, pages):
         """
         Scrapes a category page (pointed to by the URL `category_url`) for all of its pages.
         Only finds page URLs directly under this category (i.e. not recursively accumulated under subcategories).
@@ -186,16 +203,9 @@ class CategoryGraph(object):
         (i.e. just before calling) as an empty list.
         """
 
-        # Check `category_url` is a valid URL for a category page, and that the category name inferred under
-        # `category_url` is still referring to the same category as this function was initially called under
-        # (i.e. it has not changed for some reason when following the 'next page' links)
-        category_url_name = CategoryGraph.get_category_name(category_url)
-        if category_url_name is None:
+        # Check `category_url` is a valid URL for a category page
+        if CategoryGraph.get_category_url_name(category_url) is None:
             print "%s is not a valid URL for a category page" % category_url
-            return
-        if category_url_name != category_name:
-            print "%s is no longer the same as %s when scraping pages split across multiple URLs" % (category_url_name,
-                                                                                                     category_name)
             return
 
         response = get(category_url)
@@ -223,7 +233,6 @@ class CategoryGraph(object):
                         self._scrape_category(
                             category_url=homepage + page.attrs['href'],
                             pages=pages,
-                            category_name=category_name
                         )
 
                 else:
@@ -295,10 +304,7 @@ class CategoryGraph(object):
 
 if __name__ == '__main__':
 
-    category_graph = CategoryGraph(
-        root_node='Old_School_RuneScape_Wiki',
-        root_category_url='https://oldschool.runescape.wiki/w/Category:Content'
-    )
+    category_graph = CategoryGraph(root_category_url='https://oldschool.runescape.wiki/w/Category:Content')
 
     cycle_edges_to_remove = [('Construction', 'Skills'), ('Images_in_the_Wilderness', 'Images_in_the_Wilderness')]
     category_graph.remove_edges(cycle_edges_to_remove)
