@@ -1,4 +1,5 @@
 import regex
+import requests
 from requests import get
 from bs4 import BeautifulSoup
 
@@ -17,19 +18,28 @@ def is_valid_page(page_url):
 
 def scrape_page(page_url):
 
+    # Get the web page and check the response status code is good
     response = get(page_url)
+    if response.status_code != requests.codes.ok:
+        print "Bad status code on getting web page %s." % page_url
+        return
+
     soup = BeautifulSoup(response.text, 'html.parser')
 
-    # Initialise a set to store all the (non-hidden) categories classified at the bottom of the page
-    # Note: this is not necessarily the same as finding the categories containing the page in the category graph
-    # (although hopefully the lists are the same or at least similar)
-    page_categories = set()
-    category_links_div = soup.find('div', id='mw-normal-catlinks')
-    if category_links_div is not None:
-        for category in category_links_div.find_all('a'):
-            if category.text == 'Category' or category.text == 'Categories':
-                continue
-            page_categories.add(category.text)
+    # Initialise sets to store (i) normal, non-hidden categories, and (ii) hidden categories
+    page_categories = {}
+    for category_type in ['normal', 'hidden']:
+
+        page_categories[category_type] = set()
+
+        category_links_div = soup.find('div', id='mw-%s-catlinks' % category_type)
+        if category_links_div is not None:
+            for category in category_links_div.find_all('a'):
+
+                if category.text == 'Category' or category.text == 'Categories':
+                    continue
+
+                page_categories[category_type].add(category.text)
 
     # Initialise a list to store all the paragraphs of the page, as strings
     page_paragraphs = []
@@ -50,10 +60,16 @@ def scrape_page(page_url):
             # If not empty string
             page_paragraphs.append(paragraph_text)
 
-    # Extract plain-text name of page using first heading
+    # Extract plain-text name of page using first heading tag
     # Useful for file names when saving text to disk, as well as collocation vectors
+    first_heading = soup.find('h1', class_='firstHeading')
+    if first_heading is None:
+        print "%s does not have a first heading <h1> tag" % page_url
+        return
+    page_name = first_heading.text
 
     return {
+        'page_name': page_name,
         'paragraphs': page_paragraphs,
         'categories': page_categories
     }
@@ -63,6 +79,9 @@ def scrape_all_pages():
     """
     Uses https://oldschool.runescape.wiki/w/Special:AllPages to return the set of all pages (ignoring redirect pages).
     Useful to compare with all the pages found by a CategoryGraph object.
+
+    Note: the following statistics were computed before any `is_valid_page()` function was used when traversing
+    and scraping the category graph.
 
     Upon inspection, any pages found through this function, but not found when crawling the category graph,
     (about 1000) are nearly always disambiguation pages. Outside of that, they are stubs,
@@ -78,7 +97,12 @@ def scrape_all_pages():
 
     def crawl_page(page_url):
 
+        # Get the web page and check the response status code is good
         response = get(page_url)
+        if response.status_code != requests.codes.ok:
+            print "Bad status code on getting web page %s." % page_url
+            return
+
         soup = BeautifulSoup(response.text, 'html.parser')
 
         all_pages_div = soup.find('div', class_='mw-allpages-body')
