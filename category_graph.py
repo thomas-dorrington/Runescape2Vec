@@ -1,5 +1,6 @@
 import json
 import regex
+import requests
 import networkx as nx
 from requests import get
 from utils import homepage
@@ -111,7 +112,12 @@ class CategoryGraph(object):
             print "%s is not a valid URL for a category page" % category_url
             return
 
+        # Get the web page and check the response status code is good
         response = get(category_url)
+        if response.status_code != requests.codes.ok:
+            print "Bad status code on getting web page %s. Ignoring category" % category_url
+            return
+
         soup = BeautifulSoup(response.text, 'html.parser')
 
         # Extract plain-text version of category name from first heading tag
@@ -208,7 +214,12 @@ class CategoryGraph(object):
             print "%s is not a valid URL for a category page" % category_url
             return
 
+        # Get the web page and check the response status code is good
         response = get(category_url)
+        if response.status_code != requests.codes.ok:
+            print "Bad status code on getting web page %s. Ignoring category" % category_url
+            return
+
         soup = BeautifulSoup(response.text, 'html.parser')
 
         pages_div = soup.find('div', id='mw-pages')
